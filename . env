@@ -1,0 +1,8 @@
+MONGODB_URI=mongodb://localhost:27017/earn_online
+SESSION_SECRET=your-session-secret-key
+JAZZCASH_MERCHANT_ID=your-jazzcash-merchant-id
+JAZZCASH_PASSWORD=your-jazzcash-password
+JAZZCASH_SALT=your-jazzcash-salt
+JAZZCASH_INTEGRITY_SALT=your-jazzcash-integrity-salt
+JAZZCASH_RETURN_URL=http://localhost:3000/payment/callback
+PORT=3000

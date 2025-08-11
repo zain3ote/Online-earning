@@ -1,0 +1,217 @@
+require('dotenv').config();
+const express = require('express');
+const session = require('express-session');
+const mongoose = require('mongoose');
+const bodyParser = require('body-parser');
+const axios = require('axios');
+const crypto = require('crypto');
+const { v4: uuidv4 } = require('uuid');
+
+const app = express();
+
+// Database connection
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/earn_online', {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+});
+
+// User model
+const User = mongoose.model('User', {
+    username: String,
+    email: String,
+    password: String,
+    balance: { type: Number, default: 0 },
+    jazzCashNumber: String,
+    referralCode: String,
+    referredBy: String,
+    earnings: { type: Number, default: 0 },
+    withdrawals: { type: Number, default: 0 }
+});
+
+// Withdrawal model
+const Withdrawal = mongoose.model('Withdrawal', {
+    userId: mongoose.Schema.Types.ObjectId,
+    amount: Number,
+    jazzCashNumber: String,
+    status: { type: String, default: 'pending' }, // pending, completed, rejected
+    transactionId: String,
+    date: { type: Date, default: Date.now }
+});
+
+// Survey model
+const Survey = mongoose.model('Survey', {
+    title: String,
+    description: String,
+    reward: Number,
+    questions: Array,
+    completedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
+});
+
+// Middleware
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'your-secret-key',
+    resave: false,
+    saveUninitialized: true,
+    cookie: { secure: false }
+}));
+app.use(express.static('public'));
+app.set('view engine', 'ejs');
+app.set('views', 'views');
+
+// JazzCash Payment Gateway Integration
+const jazzCashConfig = {
+    merchantId: process.env.JAZZCASH_MERCHANT_ID,
+    password: process.env.JAZZCASH_PASSWORD,
+    salt: process.env.JAZZCASH_SALT,
+    returnUrl: process.env.JAZZCASH_RETURN_URL || 'http://localhost:3000/payment/callback',
+    integritySalt: process.env.JAZZCASH_INTEGRITY_SALT
+};
+
+// Generate JazzCash payment request
+function generateJazzCashRequest(amount, orderId, description) {
+    const date = new Date();
+    const expiryDate = new Date(date.getTime() + 24 * 60 * 60 * 1000); // 24 hours expiry
+    
+    const pp_TxnDateTime = date.toISOString().replace(/[-:T.]/g, '').slice(0, 14);
+    const pp_TxnExpiryDateTime = expiryDate.toISOString().replace(/[-:T.]/g, '').slice(0, 14);
+    
+    const data = {
+        pp_Version: '1.1',
+        pp_TxnType: '',
+        pp_Language: 'EN',
+        pp_MerchantID: jazzCashConfig.merchantId,
+        pp_SubMerchantID: '',
+        pp_Password: jazzCashConfig.password,
+        pp_BankID: '',
+        pp_ProductID: '',
+        pp_TxnRefNo: 'T' + date.getTime(),
+        pp_Amount: amount.toString(),
+        pp_TxnCurrency: 'PKR',
+        pp_TxnDateTime: pp_TxnDateTime,
+        pp_BillReference: orderId,
+        pp_Description: description,
+        pp_TxnExpiryDateTime: pp_TxnExpiryDateTime,
+        pp_ReturnURL: jazzCashConfig.returnUrl,
+        pp_SecureHash: '',
+        ppmpf_1: '1',
+        ppmpf_2: '2',
+        ppmpf_3: '3',
+        ppmpf_4: '4',
+        ppmpf_5: '5'
+    };
+    
+    const sortedValues = Object.values(data).sort().join('');
+    const integritySalt = jazzCashConfig.integritySalt || jazzCashConfig.salt;
+    const secureHash = crypto.createHash('sha256').update(sortedValues + integritySalt).digest('hex');
+    
+    data.pp_SecureHash = secureHash;
+    return data;
+}
+
+// Routes
+app.get('/', (req, res) => {
+    res.render('index', { user: req.session.user });
+});
+
+app.get('/dashboard', async (req, res) => {
+    if (!req.session.user) return res.redirect('/login');
+    
+    const user = await User.findById(req.session.user._id);
+    const surveys = await Survey.find({ completedBy: { $ne: user._id } });
+    const withdrawals = await Withdrawal.find({ userId: user._id }).sort({ date: -1 });
+    
+    res.render('dashboard', { 
+        user,
+        surveys,
+        withdrawals,
+        referralLink: `${req.headers.host}/signup?ref=${user.referralCode}`
+    });
+});
+
+app.post('/withdraw', async (req, res) => {
+    if (!req.session.user) return res.redirect('/login');
+    
+    const { amount, jazzCashNumber } = req.body;
+    const user = await User.findById(req.session.user._id);
+    
+    // Check balance
+    if (user.balance < amount) {
+        return res.status(400).json({ success: false, message: 'Insufficient balance' });
+    }
+    
+    // Deduct 10% fee
+    const fee = amount * 0.1;
+    const payoutAmount = amount - fee;
+    
+    // Create withdrawal record
+    const withdrawal = new Withdrawal({
+        userId: user._id,
+        amount: payoutAmount,
+        jazzCashNumber,
+        transactionId: 'W' + Date.now()
+    });
+    
+    await withdrawal.save();
+    
+    // Update user balance
+    user.balance -= amount;
+    user.withdrawals += payoutAmount;
+    await user.save();
+    
+    // In a real app, here you would call JazzCash API to process the payment
+    // For demo, we'll just mark it as completed after 5 seconds
+    setTimeout(async () => {
+        withdrawal.status = 'completed';
+        await withdrawal.save();
+    }, 5000);
+    
+    res.json({ success: true, message: 'Withdrawal request submitted' });
+});
+
+// JazzCash Payment Callback
+app.post('/payment/callback', async (req, res) => {
+    const { pp_ResponseCode, pp_Amount, pp_TxnRefNo, pp_BillReference } = req.body;
+    
+    if (pp_ResponseCode === '000') {
+        // Payment successful
+        const user = await User.findById(pp_BillReference);
+        if (user) {
+            user.balance += parseFloat(pp_Amount);
+            await user.save();
+        }
+        res.redirect('/dashboard?payment=success');
+    } else {
+        // Payment failed
+        res.redirect('/dashboard?payment=failed');
+    }
+});
+
+// Complete Survey
+app.post('/survey/complete/:id', async (req, res) => {
+    if (!req.session.user) return res.redirect('/login');
+    
+    const survey = await Survey.findById(req.params.id);
+    const user = await User.findById(req.session.user._id);
+    
+    if (!survey || survey.completedBy.includes(user._id)) {
+        return res.status(400).json({ success: false, message: 'Survey not available' });
+    }
+    
+    // Add reward to user balance
+    user.balance += survey.reward;
+    user.earnings += survey.reward;
+    survey.completedBy.push(user._id);
+    
+    await user.save();
+    await survey.save();
+    
+    res.json({ success: true, message: `You earned ${survey.reward} PKR` });
+});
+
+// Start server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+});

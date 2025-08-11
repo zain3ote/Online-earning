@@ -1,0 +1,97 @@
+document.addEventListener('DOMContentLoaded', function() {
+    // Mobile menu toggle
+    const mobileMenuBtn = document.getElementById('mobile-menu-btn');
+    const mobileMenu = document.getElementById('mobile-menu');
+    
+    if (mobileMenuBtn && mobileMenu) {
+        mobileMenuBtn.addEventListener('click', function() {
+            mobileMenu.classList.toggle('hidden');
+        });
+    }
+    
+    // Withdrawal form handling
+    const withdrawForm = document.getElementById('withdraw-form');
+    if (withdrawForm) {
+        withdrawForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const amount = parseFloat(document.getElementById('amount').value);
+            const jazzCashNumber = document.getElementById('jazzCashNumber').value;
+            
+            if (!amount || amount <= 0 || !jazzCashNumber) {
+                alert('Please enter valid amount and JazzCash number');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/withdraw', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ amount, jazzCashNumber })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert('Withdrawal request submitted successfully!');
+                    window.location.reload();
+                } else {
+                    alert(data.message || 'Withdrawal failed');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('An error occurred. Please try again.');
+            }
+        });
+    }
+    
+    // Complete survey button
+    const completeSurveyBtns = document.querySelectorAll('.complete-survey');
+    completeSurveyBtns.forEach(btn => {
+        btn.addEventListener('click', async function() {
+            const surveyId = this.dataset.surveyId;
+            
+            try {
+                const response = await fetch(`/survey/complete/${surveyId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert(data.message);
+                    window.location.reload();
+                } else {
+                    alert(data.message || 'Failed to complete survey');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('An error occurred. Please try again.');
+            }
+        });
+    });
+    
+    // Copy referral link
+    const copyReferralBtn = document.getElementById('copy-referral');
+    if (copyReferralBtn) {
+        copyReferralBtn.addEventListener('click', function() {
+            const referralLink = document.getElementById('referral-link').value;
+            navigator.clipboard.writeText(referralLink)
+                .then(() => {
+                    const originalText = this.textContent;
+                    this.textContent = 'Copied!';
+                    setTimeout(() => {
+                        this.textContent = originalText;
+                    }, 2000);
+                })
+                .catch(err => {
+                    console.error('Failed to copy: ', err);
+                });
+        });
+    }
+});
